@@ -40,13 +40,6 @@
     "ts-jest": "^29.2.6",
     "typescript": "^5.8.2"
   },
-  "files": [
-    "CHANGELOG.md",
-    "LICENSE",
-    "NOTICE.txt",
-    "README.md",
-    "dist"
-  ],
   "repository": {
     "type": "git",
     "url": "git://github.com:openfga/js-sdk.git"
