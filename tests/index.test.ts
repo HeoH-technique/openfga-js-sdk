@@ -612,7 +612,7 @@ describe("OpenFGA SDK", function () {
 
       beforeEach(async () => {
         nock(`https://${ OPENFGA_API_TOKEN_ISSUER}`)
-          .post("/oauth/token")
+          .post("/protocol/openid-connect/token")
           .reply(401);
 
         nock(basePath)

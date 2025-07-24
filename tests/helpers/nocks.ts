@@ -48,7 +48,7 @@ export const getNocks = ((nock: typeof Nock) => ({
     statusCode = 200,
   ) => {
     return nock(`https://${apiTokenIssuer}`, { reqheaders: { "Content-Type": "application/x-www-form-urlencoded"} })
-      .post("/oauth/token")
+      .post("/protocol/openid-connect/token")
       .reply(statusCode, {
         access_token: accessToken,
         expires_in: expiresIn,

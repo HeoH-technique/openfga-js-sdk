@@ -144,7 +144,7 @@ export class Credentials {
    */
   private async refreshAccessToken() {
     const clientCredentials = (this.authConfig as { method: CredentialsMethod.ClientCredentials; config: ClientCredentialsConfig })?.config;
-    const url = `https://${clientCredentials.apiTokenIssuer}/oauth/token`;
+    const url = `https://${clientCredentials.apiTokenIssuer}/protocol/openid-connect/token`;
     const credentialsPayload = await this.buildClientAuthenticationPayload();
 
     try {
