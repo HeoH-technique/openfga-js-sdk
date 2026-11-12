@@ -13,7 +13,7 @@
 
 import { AxiosInstance, AxiosRequestConfig, AxiosResponse } from "axios";
 
-import { Configuration } from "./configuration";
+import { Configuration, GetDefaultRetryParams, RetryParams } from "./configuration";
 import type { Credentials } from "./credentials";
 import {
   FgaApiError,
@@ -147,15 +147,47 @@ interface WrappedAxiosResponse<R> {
   retries: number;
 }
 
+function isUsableRetryValue(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+/**
+ * Fills each missing or unusable retry field (undefined, NaN, negative) with the SDK default,
+ * so a partial retryParams object can never disable the retry limit.
+ * No retryParams at all keeps the historical behaviour: no retry.
+ */
+export function resolveRetryParams(retryParams?: RetryParams): { maxRetry: number; minWaitInMs: number } {
+  if (!retryParams) {
+    return { maxRetry: 0, minWaitInMs: 0 };
+  }
+  const defaults = GetDefaultRetryParams();
+  return {
+    maxRetry: isUsableRetryValue(retryParams.maxRetry) ? retryParams.maxRetry : defaults.maxRetry,
+    minWaitInMs: isUsableRetryValue(retryParams.minWaitInMs) ? retryParams.minWaitInMs : defaults.minWaitInMs,
+  };
+}
+
 export async function attemptHttpRequest<B, R>(
   request: AxiosRequestConfig<B>,
   config: {
         maxRetry: number;
         minWaitInMs: number;
+        /**
+         * Retry on 5xx. Set to false for non-idempotent calls (Write): a 5xx may come after the
+         * server committed, and a replay would then fail with "already exists"/"does not exist".
+         * 429 is always retried: the server refused the request without processing it.
+         */
+        retryOnServerError?: boolean;
     },
   axiosInstance: AxiosInstance,
 ): Promise<WrappedAxiosResponse<R> | undefined> {
+  // A non-numeric maxRetry used to make every comparison false, so the loop ended without
+  // throwing and the caller got an empty success. Treat it as "no retry" here.
+  const maxRetry = isUsableRetryValue(config.maxRetry) ? config.maxRetry : 0;
+  const minWaitInMs = isUsableRetryValue(config.minWaitInMs) ? config.minWaitInMs : 0;
+  const retryOnServerError = config.retryOnServerError ?? true;
   let iterationCount = 0;
+  let lastError: FgaError | undefined;
   do {
     iterationCount++;
     try {
@@ -176,21 +208,20 @@ export async function attemptHttpRequest<B, R>(
       } else if (status === 404) {
         throw new FgaApiNotFoundError(err);
       } else if (status === 429 || status >= 500) {
-        if (iterationCount >= config.maxRetry) {
-        // We have reached the max retry limit
+        lastError = status === 429 ? new FgaApiRateLimitExceededError(err) : new FgaApiInternalError(err);
+        if (iterationCount >= maxRetry || (status !== 429 && !retryOnServerError)) {
+        // We have reached the max retry limit, or the request must not be replayed
         // Thus, we have no choice but to throw
-          if (status === 429) {
-            throw new FgaApiRateLimitExceededError(err);
-          } else {
-            throw new FgaApiInternalError(err);
-          }
+          throw lastError;
         }
-        await new Promise(r => setTimeout(r, randomTime(iterationCount, config.minWaitInMs)));
+        await new Promise(r => setTimeout(r, randomTime(iterationCount, minWaitInMs)));
       } else {
         throw new FgaApiError(err);
       }
     }
-  } while(iterationCount < config.maxRetry + 1);
+  } while(iterationCount < maxRetry + 1);
+  // Not reachable with a finite maxRetry; never let the loop resolve without a response.
+  throw lastError ?? new FgaError("Request failed: retry loop ended without a response");
 }
 
 /**
@@ -200,8 +231,9 @@ export const createRequestFunction = function (axiosArgs: RequestArgs, axiosInst
   configuration.isValid();
 
   const retryParams = axiosArgs.options?.retryParams ? axiosArgs.options?.retryParams : configuration.retryParams;
-  const maxRetry:number = retryParams ? retryParams.maxRetry : 0;
-  const minWaitInMs:number = retryParams ? retryParams.minWaitInMs : 0;
+  const { maxRetry, minWaitInMs } = resolveRetryParams(retryParams);
+  // Write is not idempotent: do not replay it after a 5xx (see attemptHttpRequest).
+  const retryOnServerError = methodAttributes[TelemetryAttribute.FgaClientRequestMethod] !== "Write";
 
   const start = performance.now();
 
@@ -214,6 +246,7 @@ export const createRequestFunction = function (axiosArgs: RequestArgs, axiosInst
     const wrappedResponse = await attemptHttpRequest(axiosRequestArgs, {
       maxRetry,
       minWaitInMs,
+      retryOnServerError,
     }, axios);
     const response = wrappedResponse?.response;
     const data = typeof response?.data === "undefined" ? {} : response?.data;

@@ -57,6 +57,39 @@ function getRequestMetadataFromPath(path?: string): {
 
 const cFGARequestId = "fga-request-id";
 
+// Fields of the OAuth token request that are credentials and must never be kept on an error.
+const SECRET_REQUEST_FIELDS = ["client_secret", "client_assertion"];
+const REDACTED = "[REDACTED]";
+
+/**
+ * Returns the request body with the credential fields of a token request masked.
+ * Covers the form-urlencoded string axios sends and the object form; other bodies are returned unchanged.
+ */
+function redactRequestData(data: unknown): unknown {
+  if (typeof data === "string") {
+    const params = new URLSearchParams(data);
+    if (!SECRET_REQUEST_FIELDS.some((field) => params.has(field))) {
+      return data;
+    }
+    SECRET_REQUEST_FIELDS.forEach((field) => {
+      if (params.has(field)) {
+        params.set(field, REDACTED);
+      }
+    });
+    return params.toString();
+  }
+  if (data && typeof data === "object" && SECRET_REQUEST_FIELDS.some((field) => field in data)) {
+    const copy: Record<string, unknown> = { ...(data as Record<string, unknown>) };
+    SECRET_REQUEST_FIELDS.forEach((field) => {
+      if (field in copy) {
+        copy[field] = REDACTED;
+      }
+    });
+    return copy;
+  }
+  return data;
+}
+
 function getResponseHeaders(err: AxiosError): any {
   return err.response
     ? Object.fromEntries(
@@ -91,7 +124,7 @@ export class FgaApiError extends FgaError {
     super(msg ? msg : err);
     this.statusCode = err.response?.status;
     this.statusText = err.response?.statusText;
-    this.requestData = err.config?.data;
+    this.requestData = redactRequestData(err.config?.data);
     this.requestURL = err.config?.url;
     this.method = err.config?.method as Method;
     const { storeId, endpointCategory } = getRequestMetadataFromPath(
